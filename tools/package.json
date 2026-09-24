@@ -2,6 +2,7 @@
   "name": "verigov-tools",
   "version": "0.1.0",
   "private": true,
+  "license": "MIT",
   "description": "Off-chain VeriGov tooling: hermetic toy builder, verifying client, and end-to-end demo driver.",
   "type": "module",
   "engines": {

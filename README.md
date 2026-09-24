@@ -334,3 +334,13 @@ genesis validation and escrow, proposer/builder/signature checks, the paper's wo
 per-role quorums and stake weighting, re-voting and approval revocation, expiry, and the
 counter-attestation/slash path (including cancelling a scheduled enactment and repeated slashes).
 `tools/demo/demo.js` is the integration test against a live node.
+
+CI (`.github/workflows/ci.yml`) builds the node in release mode, runs clippy, the pallet tests
+and `cargo doc`, smoke-tests the builder offline, and then runs `scripts/run-demo.sh` against a
+throwaway `--dev` node so both scenarios must `PASS` on every push and pull request.
+
+## License
+
+MIT — see `LICENSE`. The node/runtime scaffolding derives from Parity's
+[polkadot-sdk-solochain-template](https://github.com/paritytech/polkadot-sdk-solochain-template)
+(MIT-0). The paper in `paper/` is © its author.

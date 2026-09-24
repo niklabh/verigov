@@ -2,7 +2,7 @@
 name = "pallet-verigov"
 description = "VeriGov: DAO-governed software release log with build attestations and negligence slashing."
 version = "0.1.0"
-license = "Unlicense"
+license.workspace = true
 authors.workspace = true
 homepage.workspace = true
 repository.workspace = true
