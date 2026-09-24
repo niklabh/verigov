@@ -1,1 +1,11 @@
 .DS_Store
+
+# Rust
+target/
+
+# Node
+tools/node_modules/
+
+# Demo runtime state (local artifact store and client installs)
+data/
+install/

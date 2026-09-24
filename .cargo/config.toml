@@ -1,0 +1,6 @@
+# Rust >= 1.98 no longer lets undefined `extern "C"` symbols become wasm imports
+# implicitly, so the runtime's host-function imports (`ext_storage_get_version_1`, ...)
+# fail to link. `substrate-wasm-builder` appends `WASM_BUILD_RUSTFLAGS` to the flags
+# it uses for the wasm build; tell wasm-ld to import them.
+[env]
+WASM_BUILD_RUSTFLAGS = "-C link-arg=--import-undefined"
