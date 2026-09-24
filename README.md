@@ -17,6 +17,184 @@ $ ./scripts/run-demo.sh
 ALL PASS
 ```
 
+## The paper
+
+*VeriGov: A Crypto-Economic Protocol for Decentralized Software Supply Chain Security*
+(Nikhil Ranjan; source in `paper/ms.tex`, PDF in `paper/ms.pdf`).
+
+### Problem
+
+Open-source software is critical infrastructure, yet the infrastructure that distributes it is
+centralized: npm, PyPI, GitHub and a project's own build server are single points of trust.
+The paper draws on a series of incidents to show that authenticating *who* published a package
+is no longer a sufficient security model:
+
+- **`rand-user-agent` (2025)** — a stolen npm automation token published malicious versions with
+  no corresponding source commit. Registry checksums verified the malware perfectly.
+- **`node-ipc` (2022)** — the legitimate, fully authenticated maintainer shipped destructive
+  "protestware". Identity was correct; intent was not.
+- **`xz-utils` (CVE-2024-3094)** — a multi-year social-engineering campaign earned a maintainer
+  seat and smuggled an SSH backdoor inside binary test fixtures, invisible to source review.
+- **SolarWinds (2020)** — a compromised build system injected a backdoor into signed, legitimate
+  looking updates while the source repository stayed clean.
+
+From these the paper distills two formal gaps:
+
+- **Provenance Integrity (P_I)** — for binary *B* and source commit *c* there should exist a
+  verifiable attestation `A_build` binding `H(S_c)` to `H(B)`. Checksums prove the bytes you got
+  are the bytes uploaded; they say nothing about where the bytes came from.
+- **Release Authorization Integrity (R_A)** — a release should be valid only with ≥ *m* valid
+  signatures from *n* distinct authorized stakeholders. Today *m* = 1 almost everywhere, so one
+  stolen credential, one compromised build box, or one malicious insider is enough.
+
+### Why existing tools are not enough
+
+The paper reviews the state of the art and finds each piece solves part of the problem:
+
+| Framework | What it secures | What it leaves open |
+|---|---|---|
+| Checksums / GPG | transit integrity, single-signer identity | provenance, collective authorization |
+| **TUF** | compromise-resilient *delivery* via Root/Targets/Snapshot/Timestamp roles | who controls Root and how release decisions are made is off-band; no economic accountability |
+| **Sigstore** | keyless, transparent signer identity (Fulcio/Rekor/Cosign) | policy like "3 of 5 core devs" is social, not enforced; no penalty for a correctly identified malicious insider |
+| **Reproducible / verified builds** | bit-for-bit source→binary link | *what* to build and release is a governance question outside their scope |
+| **in-toto** | multi-step supply-chain layouts | static key set, off-chain policy, no stake |
+| **CHAINIAC** | decentralized, collectively signed update transparency | fixed approver set, cryptographic incentives only, policy lives in the client not the ledger |
+
+VeriGov positions itself as the integrating layer: authorization by on-chain collective
+governance, provenance by build attestation, identity by public key, delivery by a verifying
+client — plus an economic layer none of the above have.
+
+### Architecture
+
+Three components (Figure 1 of the paper):
+
+1. **VeriGov Client** — a minimal binary on the end-user's machine; its first install is the
+   only out-of-band trust step. It connects to the ledger, reads release metadata and governance
+   outcomes, fetches binaries from the artifact store, verifies hash and provenance against
+   on-chain data, and installs.
+2. **VeriGov DAO & Ledger** — assumed to be a Substrate chain. Stores the *Stakeholder
+   Registry* (role → public keys), *Release Proposals* (version, `source_commit_hash`, pointer to
+   `A_build`), *Votes*, the append-only *Official Release Log* of blessed binary hashes, and the
+   `VGOV` token logic. Large artifacts are never stored on-chain.
+3. **Distributed Artifact Store** — content-addressed storage (IPFS) for binaries and
+   attestations; the ledger holds only the hashes.
+
+**The build attestation `A_build`** is produced by a hermetic (network-isolated, containerized)
+reproducible build and signed by the Build Service. Its fields are `source_commit_hash`,
+`source_tree_hash`, `build_environment_hash` (container image digest), `output_binary_hash`, and
+`builder_signature`. Anyone can re-run the build in the named environment and check that their
+`H(B')` equals the attested `output_binary_hash`.
+
+**Bootstrapping.** A project joins with a `ProjectGenesis` transaction carrying a project id,
+the initial stakeholders and roles, the role policy (quorums `τ_r` and required-role set
+`R_req`), the slashing parameters `(σ_neg, σ_mal, Δ_max)`, and an initial stake escrow per
+stakeholder. It plays the role of TUF's offline Root key but is recorded on-chain, so the
+project's entire trust history is auditable. A single global `VGOV` token is shared by all
+projects so that one market price secures every project and stake cannot be hidden across
+projects.
+
+### Governance
+
+**Roles.** Core Developer (may propose releases), Security Auditor (human firms or automated
+services whose approval may be mandatory), Community Trustee (user-elected oversight), and the
+non-human Build Service (produces and signs `A_build`).
+
+**Release lifecycle.** A Core Developer submits `NewRelease(project, version, source_commit_hash,
+attestation CID)`; stakeholders independently review and rebuild during a voting period; they
+sign `(proposal_id, output_binary_hash, yes/no)` votes; an on-chain tally enacts the release by
+appending `output_binary_hash` to the Official Release Log after a delay.
+
+**Acceptance rule (Eq. 1).** With `R_req` the required roles, `S_r` the stakeholders of role
+`r`, `stake(i)` the `VGOV` staked by `i`, and `τ_r ∈ [0,1]` the role's quorum, a proposal is
+accepted iff
+
+```
+for every r in R_req:   Σ_{i ∈ S_r, vote_i = yes} stake(i)  /  Σ_{i ∈ S_r} stake(i)   ≥   τ_r
+```
+
+The role partition gives *m*-of-*n* across roles; stake weighting within a role ties influence
+to economic commitment. Constant stake recovers pure *m*-of-*n*; a single role recovers pure
+stake-weighted voting.
+
+**Proposal tracks** (Table 2): New Release (3 of 5 Core Dev **and** 1 of 2 Sec Auditor, 7-day
+period, 24 h delay), Emergency Patch (2 of 5 Core Dev **or** 2 of 2 Sec Auditor, 24 h / 1 h),
+Add Stakeholder (66 %, 14 d / 7 d), Remove Stakeholder (51 %, 7 d / 24 h), Update Params
+(75 %, 30 d / 14 d). Adding voters is deliberately slow and hard; removing a compromised one is
+fast — this on-chain **meta-governance** is what distinguishes VeriGov from TUF's manual root
+rotation.
+
+### Tokenomics and slashing
+
+`VGOV` provides governance weight, a staking bond required to propose or vote, rewards for
+correct participation, and a treasury for audits and bounties. Its teeth are two separately
+adjudicated slashing regimes:
+
+- **Negligence slashing** is *cryptographically self-evident* and adjudicated by the chain
+  alone: a Build Service signs an `A_build` whose `output_binary_hash` disagrees with an
+  independent reproducible rebuild submitted as a counter-attestation; also double-signing,
+  voting after role revocation, and liveness faults. The offender's stake is slashed by
+  `σ_neg` automatically.
+- **Malice slashing** needs *off-chain evidence* ("binary *B* is malicious" is not a
+  cryptographic relation), so it runs on a separate Dispute track: a bonded challenger, a
+  high-quorum vote by stakeholders who did *not* vote on the original release, a statute of
+  limitations `Δ_max`, slashing of the original yes-voters at `σ_mal` (reduced to `σ_neg` for
+  voters who did rebuild and were fooled), and burning of frivolous challengers' bonds.
+
+**Cost-of-attack bound (Eq. 2).** To push a malicious release an adversary must assemble, in
+every required role, a cooperating set whose stake reaches `τ_r · Σ stake`, paying for each
+member the lesser of a bribe and a key-compromise cost *plus* their expected slash
+`σ_mal · stake(i) · p` (with `p` the token price). Security therefore scales with the *product*
+of stake, slashing fraction and price; concentrated stake lowers the bribe budget; and a
+short-`VGOV`-then-attack strategy motivates long unbonding delays.
+
+### Worked example (Section 5.6) — what the demo reproduces
+
+Project `acme-utils`: five Core Developers (Alice, Bob, Carol, Dan, Eve), two Security Auditors
+(Foo Audit and the fuzzing service fuzz.io), one Build Service; `τ_CoreDev = 3/5`,
+`τ_SecAuditor = 1/2`.
+
+1. Alice tags commit `c0ff33d`; the Build Service builds it in container `deadbeef…`, gets
+   `H(B) = a1b2…`, signs `A_build`, pins it to IPFS.
+2. Alice submits `NewRelease(acme-utils, 1.2.3, c0ff33d, Qm…42)`; the runtime auto-stakes a
+   1,000 `VGOV` bond.
+3. Bob, Carol and Foo Audit rebuild independently and match `a1b2…`; fuzz.io finds no regressions.
+4. Bob, Carol, Dan vote yes, Eve abstains, both auditors vote yes.
+5. Core Dev approval 4/5 ≥ 3/5 and Sec Auditor 2/2 ≥ 1/2 → accepted; `a1b2…` is appended to
+   the release log after the enactment delay.
+6. A client polls the log, fetches *B*, verifies `H(B)`, installs.
+
+**Failure case.** A compromised Build Service injects a payload at step 1. Bob's rebuild yields
+`H(B') ≠ a1b2…`; he submits a counter-attestation; the negligence-slashing logic verifies the
+discrepancy and slashes the Build Service without any further governance action.
+
+### Security analysis, assumptions, limits
+
+The paper argues VeriGov neutralizes a compromised maintainer account (one key can only
+*propose*), protestware (collective staked review plus a Remove Stakeholder vote), build-server
+compromise (independent rebuilds expose the discrepancy) and dependency confusion (the
+environment hash pins the dependency set). It assumes secure hash and signature primitives, an
+authentic initial client install, non-collusion of a quorum of economically rational
+stakeholders, and stakeholder liveness. Open limitations include governance attacks on the
+stakeholder set, release latency for continuous-deployment projects (mitigations: batched
+releases, delegated pre-approval, bonded fast tracks), and the "Trusting Trust" compiler attack,
+which reproducible builds alone cannot detect. Future work names a prototype (this repo),
+reputation- or quadratic-weighted voting, formal verification of the protocol, and AI agents as
+Security Auditor stakeholders.
+
+### Paper → prototype map
+
+| Paper concept | Where it lives here |
+|---|---|
+| `ProjectGenesis` (stakeholders, roles, `τ_r`, `R_req`, `σ_neg`/`σ_mal`/`Δ_max`, stake escrow) | `pallets/verigov` `project_genesis`; stake as a `VGOV` hold |
+| Stakeholder Registry / Release Proposals / Votes / Official Release Log | `Stakeholders`, `Proposals`, `Votes` + `Tallies`, `ReleaseLog` storage |
+| `A_build` and `builder_signature` | `BuildAttestation` + `MultiSignature`, verified in `new_release`; produced by `tools/builder` |
+| Eq. 1 acceptance, enactment delay | `meets_quorums`, `PendingEnactments`, `on_initialize` |
+| Negligence slashing via counter-attestation | `submit_counter_attestation` → `burn_held(σ_neg · stake)` |
+| Distributed Artifact Store | `data/store/<sha256>` (local IPFS stand-in) |
+| VeriGov Client | `tools/client` |
+| Worked example + failure case | `tools/demo` Scenarios A and B |
+| Malice/Dispute track, meta-governance, emergency track, rewards | not implemented (parameters are stored) |
+
 ## Layout
 
 ```
